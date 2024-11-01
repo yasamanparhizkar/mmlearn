@@ -8,7 +8,8 @@ from typing import Any, ClassVar, Optional
 from typing_extensions import Self
 
 
-_DEFAULT_SUPPORTED_MODALITIES = ["rgb", "depth", "thermal", "text", "audio", "video"]
+_DEFAULT_SUPPORTED_MODALITIES = ["rgb", "depth", "thermal", "text", "audio", "video", "endoscopy", "mr", "oct", "us", "microscopy"
+                                 , "mammography", "pet", "fundus", "dermoscopy", "ct", "xray"]
 
 
 @dataclass
