@@ -111,6 +111,7 @@ class LinearClassifierModule(L.LightningModule):
             ]
         ] = None,
         output_file_name: str = None,
+        load_postprocessors: bool = False,
     ):
         super().__init__()
         assert task in ["binary", "multiclass", "multilabel"], (
@@ -123,7 +124,9 @@ class LinearClassifierModule(L.LightningModule):
         # -------------------------------------
         
         model: L.LightningModule = hydra.utils.instantiate(encoder)
-        postprocessors = hydra.utils.instantiate(postprocessors)
+        self.postprocessors = None
+        if postprocessors:
+            postprocessors = hydra.utils.instantiate(postprocessors)
         
         # assert isinstance(
         #     model["rgb"], L.LightningModule
@@ -133,7 +136,8 @@ class LinearClassifierModule(L.LightningModule):
             # rank_zero_warn("No encoder_checkpoint_path path was provided for linear evaluation.")
             encoder["rgb"].load_state_dict(encoder, strict=False)
             self.encoder = encoder["rgb"]
-            self.postprocessors = postprocessors["logit_scale"]
+            if postprocessors:
+                self.postprocessors = postprocessors["logit_scale"]
         else:
             checkpoint = torch.load(encoder_checkpoint_path)
 
@@ -150,30 +154,33 @@ class LinearClassifierModule(L.LightningModule):
                 for k, v in state_dict.items() if "encoders.rgb" in k
             }
 
-            # Filter and adjust keys for the RGB postprocessor
-            postprocessor_keys = {
-                k.replace("postprocessors.rgb.", "postprocessors."): v
-                for k, v in state_dict.items() if "postprocessors.rgb" in k
-            }
+            if load_postprocessors:
+                # Filter and adjust keys for the RGB postprocessor
+                postprocessor_keys = {
+                    k.replace("postprocessors.rgb.", "postprocessors."): v
+                    for k, v in state_dict.items() if "postprocessors.rgb" in k
+                }
 
-            # Try loading the state dict into the models with strict=False to allow partial loading
-            try:
-                if encoder_keys:
-                    model["rgb"].load_state_dict(encoder_keys, strict=False)
-                    print("Encoder state dict loaded successfully")
-                if postprocessor_keys:
-                    # postprocessors["norm"].load_state_dict(postprocessor_keys, strict=False)
-                    postprocessors["logit_scale"].load_state_dict(postprocessor_keys, strict=False)
-                    print("Postprocessor state dict loaded successfully")
-            except Exception as e:
-                print(f"Error loading state dict: {e}")
+                # Try loading the state dict into the models with strict=False to allow partial loading
+                try:
+                    if encoder_keys:
+                        model["rgb"].load_state_dict(encoder_keys, strict=False)
+                        print("Encoder state dict loaded successfully")
+                    if postprocessor_keys and self.postprocessors:
+                        # postprocessors["norm"].load_state_dict(postprocessor_keys, strict=False)
+                        postprocessors["logit_scale"].load_state_dict(postprocessor_keys, strict=False)
+                        print("Postprocessor state dict loaded successfully")
+                except Exception as e:
+                    print(f"Error loading state dict: {e}")
 
             # Save references to the parts loaded
             self.encoder = model["rgb"]
-            self.postprocessors = nn.Sequential(
-                # postprocessors["norm"],
-                postprocessors["logit_scale"]
-            )
+            if postprocessors and not load_postprocessors:
+                self.postprocessors = nn.Sequential(
+                    # postprocessors["norm"],
+                    postprocessors["logit_scale"]
+                )
+
             print("finished!!!!!")
         
         # -------------------------------------
@@ -191,8 +198,9 @@ class LinearClassifierModule(L.LightningModule):
         if self.freeze_encoder:
             for param in self.encoder.parameters():
                 param.requires_grad = False
-            for param in self.postprocessors.parameters():
-                param.requires_grad = False
+            if self.postprocessors:
+                for param in self.postprocessors.parameters():
+                    param.requires_grad = False
 
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -284,7 +292,8 @@ class LinearClassifierModule(L.LightningModule):
         
         if self.freeze_encoder:
             self.encoder.eval()
-            self.postprocessors.eval()
+            if self.postprocessors:
+                self.postprocessors.eval()
 
         logits, y = self._get_logits_and_labels(batch)
 
