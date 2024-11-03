@@ -5,11 +5,14 @@ from typing import Dict, Tuple, Optional
 import torch
 import torch.distributed as dist
 from hydra_zen import store
+import itertools
 from dataclasses import dataclass
 from torch import nn
 from torch.nn import functional as F  # noqa: N812
 from torchmetrics.utilities.compute import _safe_matmul
 from torchmetrics.utilities.distributed import gather_all_tensors
+
+from mmlearn.datasets.core import Modalities, find_matching_indices
 
 @dataclass
 class LossPairSpec:
@@ -90,7 +93,6 @@ class CLIPLossWithModalityLoss(nn.Module):
     def forward(
         self,
         embeddings: dict[str, torch.Tensor],
-        logit_scale: torch.Tensor,
         modality_loss_pairs: Optional[LossPairSpec] = None,
         embedding_pair_indices: Optional[
             list[tuple[torch.Tensor, torch.Tensor]]
@@ -122,8 +124,12 @@ class CLIPLossWithModalityLoss(nn.Module):
                 all_features_a = gathered_embeddings[loss_pairs.modalities[0]]
                 all_features_b = gathered_embeddings[loss_pairs.modalities[1]]
 
-            features_a = embeddings[loss_pairs.modalities[0]]
-            features_b = embeddings[loss_pairs.modalities[1]]
+            modality_a = Modalities.get_modality(loss_pairs.modalities[0])
+            modality_b = Modalities.get_modality(loss_pairs.modalities[1])
+            if modality_a.name not in embeddings.keys() or modality_b.name not in embeddings.keys():
+                continue
+            features_a = embeddings[modality_a.name]
+            features_b = embeddings[modality_b.name]
 
             if embedding_pair_indices is not None:
                 indices_a, indices_b = embedding_pair_indices[idx]
@@ -138,22 +144,22 @@ class CLIPLossWithModalityLoss(nn.Module):
             # compute logits
             if world_size > 1:
                 if self.local_loss:
-                    logits_per_feature_a = logit_scale * _safe_matmul(
+                    logits_per_feature_a = _safe_matmul(
                         features_a, all_features_b
                     )
-                    logits_per_feature_b = logit_scale * _safe_matmul(
+                    logits_per_feature_b = _safe_matmul(
                         features_b, all_features_a
                     )
                 else:
-                    logits_per_feature_a = logit_scale * _safe_matmul(
+                    logits_per_feature_a = _safe_matmul(
                         all_features_a, all_features_b
                     )
                     logits_per_feature_b = logits_per_feature_a.T
             else:
-                logits_per_feature_a = logit_scale * _safe_matmul(
+                logits_per_feature_a = _safe_matmul(
                     features_a, features_b
                 )
-                logits_per_feature_b = logit_scale * _safe_matmul(
+                logits_per_feature_b = _safe_matmul(
                     features_b, features_a
                 )
 
@@ -175,8 +181,6 @@ class CLIPLossWithModalityLoss(nn.Module):
                 * loss_pairs.weight
             )
             
-            
-        print(f"============================ available_modalities {available_modalities}")
 
         if self.modality_loss:
             if world_size > 1:
@@ -201,13 +205,13 @@ class CLIPLossWithModalityLoss(nn.Module):
                 ],
                 device=all_features.device,
             )
-            logits = logit_scale * _safe_matmul(all_features, all_features)
+            logits = _safe_matmul(all_features, all_features)
             logits[torch.eye(all_features.size(0)).bool()] = float("inf")
 
             target = torch.eye(all_features.size(0))
             target[positive_indices[:, 0], positive_indices[:, 1]] = 1
-
-            modality_loss = torch.nn.functional.binary_cross_entropy(
+            target = target.to(logits.device)
+            modality_loss = torch.nn.functional.binary_cross_entropy_with_logits(
                 logits.sigmoid(), target, reduction="none"
             )
 
@@ -216,10 +220,14 @@ class CLIPLossWithModalityLoss(nn.Module):
 
             # loss_pos and loss_neg below contain non-zero values only for those elements
             # that are positive pairs and negative pairs respectively.
-            loss_pos = torch.zeros(logits.size(0), logits.size(0)).masked_scatter(
+            device = logits.device
+            modality_loss = modality_loss.to(device)
+            target_pos = target_pos.to(device)  
+            target_neg = target_neg.to(device)  
+            loss_pos = torch.zeros(logits.size(0), logits.size(0), device=device).masked_scatter(
                 target_pos, modality_loss[target_pos]
             )
-            loss_neg = torch.zeros(logits.size(0), logits.size(0)).masked_scatter(
+            loss_neg = torch.zeros(logits.size(0), logits.size(0), device=device).masked_scatter(
                 target_neg, modality_loss[target_neg]
             )
 

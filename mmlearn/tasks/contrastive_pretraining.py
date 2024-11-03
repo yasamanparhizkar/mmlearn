@@ -18,6 +18,7 @@ from torch import nn
 from mmlearn.datasets.core import Modalities, find_matching_indices
 from mmlearn.datasets.core.modalities import Modality
 from mmlearn.modules.losses import CLIPLoss
+from mmlearn.modules.losses import CLIPLossWithModalityLoss
 from mmlearn.tasks.hooks import EvaluationHooks
 
 
@@ -158,6 +159,7 @@ class ContrastivePretraining(L.LightningModule):
         compute_validation_loss: bool = True,
         compute_test_loss: bool = True,
         evaluation_tasks: Optional[Dict[str, EvaluationSpec]] = None,
+        modality_alignment: bool = False,
     ) -> None:
         """Initialize the module."""
         super().__init__()
@@ -172,7 +174,7 @@ class ContrastivePretraining(L.LightningModule):
                 "evaluation_tasks",
             ]
         )
-
+        self.modality_alignment = modality_alignment
         if modality_module_mapping is None:
             # assume all the module dictionaries use the same keys corresponding
             # to modalities
@@ -331,7 +333,11 @@ class ContrastivePretraining(L.LightningModule):
         torch.Tensor
             The encoded values for the specified modality.
         """
-        output = self.encoders[modality.name](inputs)[0]
+        if modality.name != "text":
+            output = self.encoders[modality.name](inputs, modality.name)[0]
+        else:
+            output = self.encoders[modality.name](inputs)[0]
+            
 
         if self.heads and modality.name in self.heads:
             output = self.heads[modality.name](output)
@@ -356,7 +362,7 @@ class ContrastivePretraining(L.LightningModule):
         """
         outputs = {
             modality.embedding: self.encode(inputs, modality)
-            for modality in self._available_modalities
+            for modality in self._available_modalities if modality.name in inputs.keys()
         }
 
         if not all(
@@ -372,48 +378,66 @@ class ContrastivePretraining(L.LightningModule):
     ) -> Optional[torch.Tensor]:
         if self.loss_fn is None:
             return None
-
-        contrastive_losses: list[torch.Tensor] = []
-        for loss_pair in self.modality_loss_pairs:
-            modality_a = Modalities.get_modality(loss_pair.modalities[0])
-            modality_b = Modalities.get_modality(loss_pair.modalities[1])
-
-            indices_a, indices_b = find_matching_indices(
-                batch["example_ids"][modality_a.name],
-                batch["example_ids"][modality_b.name],
-            )
-            if indices_a.numel() == 0 or indices_b.numel() == 0:
-                continue
-
-            contrastive_losses.append(
-                self.loss_fn(
-                    outputs[modality_a.embedding][indices_a],
-                    outputs[modality_b.embedding][indices_b],
+        if not self.modality_alignment:
+            contrastive_losses: list[torch.Tensor] = []
+            for loss_pair in self.modality_loss_pairs:
+                modality_a = Modalities.get_modality(loss_pair.modalities[0])
+                modality_b = Modalities.get_modality(loss_pair.modalities[1])
+                if modality_a.name not in batch.keys() or modality_b.name not in batch.keys():
+                    continue
+                indices_a, indices_b = find_matching_indices(
+                    batch["example_ids"][modality_a.name],
+                    batch["example_ids"][modality_b.name],
                 )
-                * loss_pair.weight
-            )
+                if indices_a.numel() == 0 or indices_b.numel() == 0:
+                    continue
 
-        auxiliary_losses: list[torch.Tensor] = []
-        if self.auxiliary_tasks:
-            for task_name, task_spec in self.aux_task_specs.items():
-                auxiliary_task_output = self.auxiliary_tasks[task_name].training_step(
-                    batch, batch_idx
-                )
-                if isinstance(auxiliary_task_output, torch.Tensor):
-                    auxiliary_task_loss = auxiliary_task_output
-                elif isinstance(auxiliary_task_output, Mapping):
-                    auxiliary_task_loss = auxiliary_task_output["loss"]
-                else:
-                    raise ValueError(
-                        "Expected auxiliary task output to be a tensor or a mapping "
-                        f"containing a 'loss' key, but got {type(auxiliary_task_output)}."
+                contrastive_losses.append(
+                    self.loss_fn(
+                        outputs[modality_a.embedding][indices_a],
+                        outputs[modality_b.embedding][indices_b],
                     )
+                    * loss_pair.weight
+                )
 
-                auxiliary_losses.append(task_spec.loss_weight * auxiliary_task_loss)
-                if self.log_auxiliary_tasks_loss:
-                    self.log(f"train/{task_name}_loss", auxiliary_task_loss)
+            auxiliary_losses: list[torch.Tensor] = []
+            if self.auxiliary_tasks:
+                for task_name, task_spec in self.aux_task_specs.items():
+                    auxiliary_task_output = self.auxiliary_tasks[task_name].training_step(
+                        batch, batch_idx
+                    )
+                    if isinstance(auxiliary_task_output, torch.Tensor):
+                        auxiliary_task_loss = auxiliary_task_output
+                    elif isinstance(auxiliary_task_output, Mapping):
+                        auxiliary_task_loss = auxiliary_task_output["loss"]
+                    else:
+                        raise ValueError(
+                            "Expected auxiliary task output to be a tensor or a mapping "
+                            f"containing a 'loss' key, but got {type(auxiliary_task_output)}."
+                        )
 
-        return torch.stack(contrastive_losses + auxiliary_losses).sum()
+                    auxiliary_losses.append(task_spec.loss_weight * auxiliary_task_loss)
+                    if self.log_auxiliary_tasks_loss:
+                        self.log(f"train/{task_name}_loss", auxiliary_task_loss)
+
+            return torch.stack(contrastive_losses + auxiliary_losses).sum()
+        else:
+            contrastive_losses: list[torch.Tensor] = []
+            for loss_pair in self.modality_loss_pairs:
+                modality_a = Modalities.get_modality(loss_pair.modalities[0])
+                modality_b = Modalities.get_modality(loss_pair.modalities[1])
+                if modality_a.name not in batch.keys() or modality_b.name not in batch.keys():
+                    continue
+                indices_a, indices_b = find_matching_indices(
+                    batch["example_ids"][modality_a.name],
+                    batch["example_ids"][modality_b.name],
+                )
+                
+            embedding_pair_indices = [(a, b) for a, b in zip(indices_a, indices_b)]
+                
+            new_loss_fn = CLIPLossWithModalityLoss()
+            final_loss = new_loss_fn(outputs, self.modality_loss_pairs, embedding_pair_indices)
+            return final_loss
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         """Compute the loss for the batch.

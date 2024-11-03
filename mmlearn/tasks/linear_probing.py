@@ -16,6 +16,7 @@ from torch import nn
 from torchmetrics import MetricCollection, Accuracy, AUROC, Precision, Recall, F1Score
 from hydra_zen import store
 import pandas as pd
+import os
 
 from mmlearn.datasets.core import Modalities, find_matching_indices
 from mmlearn.datasets.core.modalities import Modality
@@ -111,7 +112,6 @@ class LinearClassifierModule(L.LightningModule):
             ]
         ] = None,
         output_file_name: str = None,
-        load_postprocessors: bool = False,
     ):
         super().__init__()
         assert task in ["binary", "multiclass", "multilabel"], (
@@ -154,33 +154,31 @@ class LinearClassifierModule(L.LightningModule):
                 for k, v in state_dict.items() if "encoders.rgb" in k
             }
 
-            if load_postprocessors:
-                # Filter and adjust keys for the RGB postprocessor
-                postprocessor_keys = {
-                    k.replace("postprocessors.rgb.", "postprocessors."): v
-                    for k, v in state_dict.items() if "postprocessors.rgb" in k
-                }
+            # Filter and adjust keys for the RGB postprocessor
+            postprocessor_keys = {
+                k.replace("postprocessors.rgb.", "postprocessors."): v
+                for k, v in state_dict.items() if "postprocessors.rgb" in k
+            }
 
-                # Try loading the state dict into the models with strict=False to allow partial loading
-                try:
-                    if encoder_keys:
-                        model["rgb"].load_state_dict(encoder_keys, strict=False)
-                        print("Encoder state dict loaded successfully")
-                    if postprocessor_keys and self.postprocessors:
-                        # postprocessors["norm"].load_state_dict(postprocessor_keys, strict=False)
-                        postprocessors["logit_scale"].load_state_dict(postprocessor_keys, strict=False)
-                        print("Postprocessor state dict loaded successfully")
-                except Exception as e:
-                    print(f"Error loading state dict: {e}")
+            # Try loading the state dict into the models with strict=False to allow partial loading
+            try:
+                if encoder_keys:
+                    model["rgb"].load_state_dict(encoder_keys, strict=False)
+                    print("Encoder state dict loaded successfully")
+                if postprocessor_keys and self.postprocessors:
+                    # postprocessors["norm"].load_state_dict(postprocessor_keys, strict=False)
+                    postprocessors["logit_scale"].load_state_dict(postprocessor_keys, strict=False)
+                    print("Postprocessor state dict loaded successfully")
+            except Exception as e:
+                print(f"Error loading state dict: {e}")
 
             # Save references to the parts loaded
             self.encoder = model["rgb"]
-            if postprocessors and not load_postprocessors:
+            if postprocessors:
                 self.postprocessors = nn.Sequential(
                     # postprocessors["norm"],
                     postprocessors["logit_scale"]
                 )
-
             print("finished!!!!!")
         
         # -------------------------------------
@@ -400,7 +398,10 @@ class LinearClassifierModule(L.LightningModule):
 
         if self.output_file_name:
             logits_list = logits.tolist()
-            results_dict = {path: label.index(max(label)) for path, label in zip(batch["image_path"], logits_list)}
+            results_dict = {
+                path: (label.index(max(label)), caption) 
+                for path, label, caption in zip(batch["image_path"], logits_list, batch["caption"])
+            }
             
             self.modality_labels.update(results_dict)
 
@@ -415,10 +416,21 @@ class LinearClassifierModule(L.LightningModule):
         self.valid_metrics.reset()
         
         if self.output_file_name:
-            df = pd.DataFrame(list(self.modality_labels.items()), columns=['image_path', 'label'])
+            df = pd.DataFrame(
+                [(path, label_caption[0], label_caption[1]) for path, label_caption in self.modality_labels.items()],
+                columns=['image_path', 'modality_label', 'caption']
+            )
+            
+            idx_to_name = {idx: name for idx, name in enumerate(sorted(os.listdir("/projects/multimodal/datasets/ImageCLEF_2/train")))}
+
+            # Map the 'modality_label' column to 'modality' names
+            df['modality'] = df['modality_label'].map(idx_to_name)
 
             # Write to a CSV file
-            df.to_csv(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.csv", index=False)
+            # df.to_csv(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.csv", index=False)
+            # Save DataFrame to JSON file
+            df.to_json(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.json", orient="records", lines=True)
+
 
 
     def configure_optimizers(self) -> OptimizerLRScheduler:  # noqa: PLR0912

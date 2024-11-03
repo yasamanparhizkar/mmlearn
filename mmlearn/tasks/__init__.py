@@ -4,7 +4,6 @@ from mmlearn.tasks.contrastive_pretraining import ContrastivePretraining
 from mmlearn.tasks.zero_shot_classification import ZeroShotClassification
 from mmlearn.tasks.zero_shot_retrieval import ZeroShotCrossModalRetrieval
 from mmlearn.tasks.linear_probing import LinearClassifierModule
-from mmlearn.tasks.contrastive_pretraining_modality import ContrastivePretrainingModality
 
 
 __all__ = [
@@ -12,5 +11,4 @@ __all__ = [
     "LinearClassifierModule",
     "ZeroShotCrossModalRetrieval",
     "ZeroShotClassification",
-    "ContrastivePretrainingModality",
 ]
