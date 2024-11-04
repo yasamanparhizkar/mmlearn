@@ -71,6 +71,9 @@ class CLIPLoss(nn.Module):
         if self._prev_num_logits != num_logits or device not in self._labels:
             labels = torch.arange(num_logits, device=device, dtype=torch.long)
             if world_size > 1 and self.local_loss:
+                # print(f"------------ labels: {labels}")
+                # print(f"------------ num_logits: {num_logits}")
+                # print(f"------------ rank: {rank}")
                 labels = labels + num_logits * rank
             if self.cache_labels:
                 self._labels[device] = labels
@@ -163,6 +166,7 @@ class CLIPLoss(nn.Module):
             F.cross_entropy(logits_per_feat1, labels)
             + F.cross_entropy(logits_per_feat2, labels)
         ) / 2
+        # print(f"OUT OF HERE !!!!!!!!")
 
 
 def gather_features(

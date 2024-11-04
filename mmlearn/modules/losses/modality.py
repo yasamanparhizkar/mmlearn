@@ -121,8 +121,12 @@ class CLIPLossWithModalityLoss(nn.Module):
         losses = []
         for idx, loss_pairs in enumerate(modality_loss_pairs):
             if world_size > 1:
-                all_features_a = gathered_embeddings[loss_pairs.modalities[0]]
-                all_features_b = gathered_embeddings[loss_pairs.modalities[1]]
+                modality_a = Modalities.get_modality(loss_pairs.modalities[0])
+                modality_b = Modalities.get_modality(loss_pairs.modalities[1])
+                if modality_a.name not in gathered_embeddings.keys() or modality_b.name not in gathered_embeddings.keys():
+                    continue
+                all_features_a = gathered_embeddings[modality_a.name]
+                all_features_b = gathered_embeddings[modality_b.name]
 
             modality_a = Modalities.get_modality(loss_pairs.modalities[0])
             modality_b = Modalities.get_modality(loss_pairs.modalities[1])
@@ -185,7 +189,7 @@ class CLIPLossWithModalityLoss(nn.Module):
         if self.modality_loss:
             if world_size > 1:
                 all_features = torch.cat(
-                    [gathered_embeddings[k] for k in embeddings], dim=0
+                    [gathered_embeddings[k] for k in gathered_embeddings], dim=0
                 )
             else:
                 all_features = torch.cat([embeddings[k] for k in embeddings], dim=0)

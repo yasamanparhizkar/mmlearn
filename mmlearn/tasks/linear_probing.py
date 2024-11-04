@@ -429,7 +429,7 @@ class LinearClassifierModule(L.LightningModule):
             # Write to a CSV file
             # df.to_csv(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.csv", index=False)
             # Save DataFrame to JSON file
-            df.to_json(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.json", orient="records", lines=True)
+            df.to_json(f"/projects/multimodal/datasets/PMC-OA-2_labels/{self.output_file_name}.jsonl", orient="records", lines=True)
 
 
 
